@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <title>Camera Shake Lab — Procedural Envelope Rig</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true"></span>
+          <div>
+            <h1>Camera Shake Lab</h1>
+            <p>Procedural, time-enveloped camera displacement and rotation</p>
+          </div>
+        </div>
+        <div class="status-cluster">
+          <span id="clock-pill" class="pill" data-state="playing">playing</span>
+          <span id="space-pill" class="pill pill-muted">local space</span>
+          <span id="audit-pill" class="pill pill-muted">audit pending</span>
+        </div>
+      </header>
+
+      <main class="layout">
+        <div class="main-col">
+          <section class="viewport-panel panel" aria-label="Camera output">
+            <div class="panel-head">
+              <h2>Render camera</h2>
+              <div class="view-toggles" role="group" aria-label="Overlay toggles">
+                <label class="toggle"><input type="checkbox" id="toggle-rig" checked /> rig gizmo</label>
+                <label class="toggle"><input type="checkbox" id="toggle-axes" checked /> axes</label>
+                <label class="toggle"><input type="checkbox" id="toggle-stats" checked /> frame stats</label>
+              </div>
+            </div>
+            <div class="viewport" id="viewport">
+              <canvas id="scene-canvas"></canvas>
+              <div class="reticle" aria-hidden="true"></div>
+              <figure class="chase-inset" aria-label="Base and final camera frustums from a chase view">
+                <canvas id="chase-canvas"></canvas>
+                <figcaption>rig diagnostic · base <i class="swatch-base"></i> final <i class="swatch-final"></i></figcaption>
+              </figure>
+              <div class="viewport-hud">
+                <div class="hud-block">
+                  <span class="hud-label">base pose</span>
+                  <code id="hud-base">—</code>
+                </div>
+                <div class="hud-block">
+                  <span class="hud-label">shake add</span>
+                  <code id="hud-shake">—</code>
+                </div>
+                <div class="hud-block">
+                  <span class="hud-label">final pose</span>
+                  <code id="hud-final">—</code>
+                </div>
+              </div>
+              <div class="viewport-footer">
+                <div class="hud-block">
+                  <span class="hud-label">time source</span>
+                  <code id="hud-clock">declared clock</code>
+                </div>
+                <div class="hud-block">
+                  <span class="hud-label">frame</span>
+                  <code id="hud-frame">—</code>
+                </div>
+                <div class="hud-block">
+                  <span class="hud-label">base offset</span>
+                  <code id="hud-residual">—</code>
+                </div>
+              </div>
+            </div>
+            <div class="transport" role="group" aria-label="Playback transport">
+              <button id="btn-play" class="primary" type="button">Pause</button>
+              <button id="btn-restart" type="button">Replay</button>
+              <label class="field inline">
+                <span>time scale</span>
+                <input id="time-scale" type="range" min="0" max="2" step="0.05" value="1" />
+                <output id="time-scale-out">1.00×</output>
+              </label>
+              <label class="field inline">
+                <span>seed</span>
+                <input id="seed-input" type="number" min="0" max="4294967295" step="1" value="1337" />
+              </label>
+              <label class="field inline">
+                <span>space</span>
+                <select id="space-select">
+                  <option value="local" selected>local (camera-relative)</option>
+                  <option value="world">world (absolute)</option>
+                </select>
+              </label>
+              <div class="scrub">
+                <input id="scrub" type="range" min="0" max="1000" step="1" value="0" aria-label="Timeline scrub" />
+                <output id="scrub-out">0.00 s</output>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel trajectory-panel">
+            <div class="panel-head">
+              <h2>Trajectory</h2>
+              <div class="axis-toggle" role="group" aria-label="Trajectory axis">
+                <button type="button" data-axis="x">X</button>
+                <button type="button" data-axis="y" class="primary">Y</button>
+                <button type="button" data-axis="z">Z</button>
+              </div>
+            </div>
+            <canvas id="trajectory-canvas" class="chart" aria-label="Camera position over time"></canvas>
+            <canvas id="shake-canvas" class="chart" aria-label="Additive shake signal"></canvas>
+          </section>
+        </div>
+
+        <aside class="side">
+          <section class="panel">
+            <div class="panel-head">
+              <h2>Shake spectrum</h2>
+              <span class="subtle">Hz per band</span>
+            </div>
+            <div class="controls">
+              <label class="slider-row">
+                <span>low <output id="low-out">2.00</output></span>
+                <input id="low-hz" type="range" min="0.3" max="6" step="0.05" value="2" />
+              </label>
+              <label class="slider-row">
+                <span>mid <output id="mid-out">7.00</output></span>
+                <input id="mid-hz" type="range" min="2" max="16" step="0.05" value="7" />
+              </label>
+              <label class="slider-row">
+                <span>high <output id="high-out">18.00</output></span>
+                <input id="high-hz" type="range" min="8" max="40" step="0.1" value="18" />
+              </label>
+              <label class="slider-row">
+                <span>low gain <output id="low-gain-out">1.00</output></span>
+                <input id="low-gain" type="range" min="0" max="2.5" step="0.05" value="1" />
+              </label>
+              <label class="slider-row">
+                <span>mid gain <output id="mid-gain-out">1.00</output></span>
+                <input id="mid-gain" type="range" min="0" max="2.5" step="0.05" value="1" />
+              </label>
+              <label class="slider-row">
+                <span>high gain <output id="high-gain-out">1.00</output></span>
+                <input id="high-gain" type="range" min="0" max="2.5" step="0.05" value="1" />
+              </label>
+            </div>
+            <div class="preset-row" role="group" aria-label="Presets">
+              <button type="button" data-preset="impulse">Single impulse</button>
+              <button type="button" data-preset="engine">Continuous engine</button>
+              <button type="button" data-preset="combined" class="primary">Impulse + engine</button>
+            </div>
+            <p class="hint" id="preset-hint">Layered events; additive signals share one declared coordinate space.</p>
+            <canvas id="spectrum-canvas" class="chart chart-spectrum" aria-label="Measured spectrum"></canvas>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <h2>Event envelopes</h2>
+              <span class="subtle">normalized 0–1</span>
+            </div>
+            <canvas id="envelope-canvas" class="chart" aria-label="Shake envelopes"></canvas>
+            <div class="legend" id="envelope-legend"></div>
+          </section>
+
+        </aside>
+      </main>
+
+      <section class="results panel" aria-label="Metrics and audit results">
+        <div class="panel-head">
+          <h2>Result area — measured motion and envelopes</h2>
+          <div class="chart-actions">
+            <button type="button" id="btn-audit">Run trajectory audit</button>
+            <span class="subtle" id="audit-stamp">—</span>
+          </div>
+        </div>
+        <div class="metrics" id="metrics">
+          <article class="metric">
+            <span class="metric-label">shake amplitude</span>
+            <strong id="m-peak">—</strong>
+            <span class="metric-sub" id="m-peak-sub">peak |Δpos| in window</span>
+          </article>
+          <article class="metric">
+            <span class="metric-label">rotation amplitude</span>
+            <strong id="m-rot">—</strong>
+            <span class="metric-sub" id="m-rot-sub">peak |Δrot| in window</span>
+          </article>
+          <article class="metric">
+            <span class="metric-label">envelope peak</span>
+            <strong id="m-env">—</strong>
+            <span class="metric-sub" id="m-env-sub">max normalized envelope</span>
+          </article>
+          <article class="metric">
+            <span class="metric-label">live base offset</span>
+            <strong id="m-residual">—</strong>
+            <span class="metric-sub" id="m-residual-sub">final − base offset</span>
+          </article>
+          <article class="metric">
+            <span class="metric-label">dominant f</span>
+            <strong id="m-freq">—</strong>
+            <span class="metric-sub" id="m-freq-sub">measured in window</span>
+          </article>
+          <article class="metric">
+            <span class="metric-label">max step</span>
+            <strong id="m-step">—</strong>
+            <span class="metric-sub" id="m-step-sub">per-frame position step</span>
+          </article>
+        </div>
+
+        <div class="results-body">
+          <div class="results-left">
+            <h3>Signal decomposition <span class="subtle">live, from the render camera</span></h3>
+            <table class="component-table">
+              <thead>
+                <tr>
+                  <th>component</th>
+                  <th>X / pitch</th>
+                  <th>Y / yaw</th>
+                  <th>Z / roll</th>
+                  <th>unit</th>
+                </tr>
+              </thead>
+              <tbody id="component-body"></tbody>
+            </table>
+
+            <h3 style="margin-top:14px">Event results <span class="subtle">measured from the schedule</span></h3>
+            <table class="component-table envelope-table">
+              <thead>
+                <tr>
+                  <th>event</th>
+                  <th>start</th>
+                  <th>end</th>
+                  <th>peak |Δp|</th>
+                  <th>peak env</th>
+                  <th>own end offset</th>
+                </tr>
+              </thead>
+              <tbody id="event-results"></tbody>
+            </table>
+            <p class="hint" style="margin:8px 0 0">Own end offset is that event's contribution at its declared end; overlap with other events is reported by the global audit.</p>
+          </div>
+
+          <div class="results-right">
+            <h3>Audit <span class="subtle" id="audit-summary">not run</span></h3>
+            <div id="audit-detail" class="audit-detail">
+              <p class="hint">Run the audit to compare impulse and engine envelopes, frame-rate replay at 24/30/60/144 Hz, spectral peak tracking, and residual offset after each event ends.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <footer class="footer">
+        <p>
+          Every sample is a pure function of the declared clock time, seed and spectrum. No per-frame random
+          offsets are accumulated, so replaying at any frame rate reproduces the same path and returns the
+          camera to its exact base pose when the envelopes close.
+        </p>
+      </footer>
+    </div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
