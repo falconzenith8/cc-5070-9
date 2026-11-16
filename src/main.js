@@ -7,6 +7,15 @@ import { buildPreset, PRESETS, validateSpectrum, validateEvents, validateSeed } 
 import { runAudit } from './analysis/audit.js';
 import { amplitudeSpectrum, peakInRange } from './analysis/fft.js';
 import { maxStep, translationMagnitude } from './analysis/trajectory.js';
+import {
+  analyzeFeedbackRecord,
+  angularVelocityDegPerSecond,
+  captureCameraFeedback,
+  compareFeedbackRecords,
+  uniformTimes,
+} from './analysis/feedback.js';
+import { PoseCamera, captureFrameCountFeedback, collectShakeTimingEvidence } from './analysis/shakeTiming.js';
+import { quatFromEulerYXZ, quatMultiply } from './shake/quaternion.js';
 import { drawEnvelopeChart, drawTrajectoryChart, drawShakeChart, drawSpectrumChart } from './ui/charts.js';
 
 const els = {
@@ -59,8 +68,13 @@ const els = {
   mFreqSub: document.getElementById('m-freq-sub'),
   mStep: document.getElementById('m-step'),
   mStepSub: document.getElementById('m-step-sub'),
+  mOmega: document.getElementById('m-omega'),
+  mOmegaSub: document.getElementById('m-omega-sub'),
   componentBody: document.getElementById('component-body'),
   auditButton: document.getElementById('btn-audit'),
+  timingButton: document.getElementById('btn-timing'),
+  timingSummary: document.getElementById('timing-summary'),
+  timingDetail: document.getElementById('timing-detail'),
   auditStamp: document.getElementById('audit-stamp'),
   auditSummary: document.getElementById('audit-summary'),
   auditDetail: document.getElementById('audit-detail'),
@@ -79,6 +93,7 @@ const state = {
   frames: 0,
   lastError: null,
   audit: null,
+  timing: null,
   fps: 0,
   fpsFrames: 0,
   fpsElapsed: 0,
@@ -100,6 +115,9 @@ let clock = new PlaybackClock({
 
 let liveStates = null;
 let liveSpectrum = null;
+let lastCameraQuat = null;
+let lastCameraTime = null;
+let liveAngularVelocity = 0;
 
 // --- renderer ---------------------------------------------------------
 const renderer = new THREE.WebGLRenderer({
@@ -156,6 +174,14 @@ function applyCamera(stateAtTime) {
     stateAtTime.final.quaternion.w,
   );
   camera.updateMatrixWorld();
+}
+
+/** Angular speed of the rendered camera between two declared times. */
+function measureAngularVelocity(previous, previousTime, current, currentTime) {
+  if (!previous || previousTime == null) return null;
+  const dt = currentTime - previousTime;
+  if (!(dt > 1e-9)) return null;
+  return angularVelocityDegPerSecond(previous, current, dt);
 }
 
 function setError(error) {
@@ -333,6 +359,20 @@ function renderLegend() {
 }
 
 // --- per-frame readouts ----------------------------------------------
+function captureLiveAngularVelocity(time) {
+  const current = {
+    x: camera.quaternion.x,
+    y: camera.quaternion.y,
+    z: camera.quaternion.z,
+    w: camera.quaternion.w,
+  };
+  const value = measureAngularVelocity(lastCameraQuat, lastCameraTime, current, time);
+  lastCameraQuat = current;
+  lastCameraTime = time;
+  if (value != null) liveAngularVelocity = value;
+  return liveAngularVelocity;
+}
+
 function updateReadouts(evaluated) {
   const { base, shake, final, contributions, envelopes, residual } = evaluated;
 
@@ -367,6 +407,8 @@ function updateReadouts(evaluated) {
     : 'no window';
   els.mStep.textContent = windowMetrics.step ? mm(windowMetrics.step.value) : '—';
   els.mStepSub.textContent = windowMetrics.step ? `${(windowMetrics.step.rate * 1000).toFixed(1)} mm/s at ${liveStates?.rate.toFixed(0)}Hz` : 'per-frame position step';
+  els.mOmega.textContent = `${liveAngularVelocity.toFixed(3)} °/s`;
+  els.mOmegaSub.textContent = `Δq between rendered frames @ ${clock.time.toFixed(3)}s`;
 
   const rows = [];
   const axisLabel = state.axis;
@@ -449,6 +491,7 @@ function frame(now) {
   state.frames += 1;
   const evaluated = rig.evaluate(clock.time);
   applyCamera(evaluated);
+  captureLiveAngularVelocity(clock.time);
   chase.update(evaluated);
 
   const residual = rig.residual(clock.time);
@@ -634,6 +677,66 @@ function renderAudit(audit) {
 
 els.auditButton.addEventListener('click', runAndRenderAudit);
 
+function runAndRenderTiming() {
+  els.timingButton.disabled = true;
+  els.timingSummary.textContent = 'running…';
+  requestAnimationFrame(() => {
+    const evidence = collectShakeTimingEvidence({
+      seed: state.seed,
+      rates: [24, 30, 60, 144],
+      camera,
+      spectrum: state.spectrum,
+      space: state.space,
+      duration: Math.max(rig.duration, 8.05),
+    });
+    state.timing = evidence;
+    renderTiming(evidence);
+    els.timingButton.disabled = false;
+  });
+}
+
+function renderTiming(evidence) {
+  const passed = evidence.pass;
+  els.timingSummary.textContent = passed ? 'timing pass' : 'timing fail';
+  const row = (label, value, ok) => `<div class="audit-row ${ok ? 'pass' : 'fail'}"><span class="k">${label}</span><span class="v">${value}</span></div>`;
+  const exp = (v) => (Math.abs(v) < 1e-12 ? '0' : v.toExponential(2));
+  const parts = [];
+  for (const result of evidence.checks.feedback.results) {
+    parts.push(row(
+      `${result.rate} Hz feedback`,
+      `${result.frames} frames · env ${exp(result.maxEnvelopeError)} · ω ${exp(result.maxAngularVelocityError)}`,
+      result.pass,
+    ));
+  }
+  parts.push(row(
+    'shared declared times',
+    `Δp ${exp(evidence.checks.feedback.maxSharedPositionError)} m · Δq ${exp(evidence.checks.feedback.maxSharedRotationError)} rad`,
+    evidence.checks.feedback.sharedTimesExact,
+  ));
+  const env = evidence.evidence.envelope;
+  parts.push(row(
+    'envelope from raw record',
+    `${evidence.evidence.envelope.rows.length} rows · max err ${exp(env.maxError)}${env.worst ? ` @ ${env.worst.time.toFixed(2)}s` : ''}`,
+    env.maxError <= 1e-9,
+  ));
+  const ang = evidence.evidence.angularVelocity;
+  parts.push(row(
+    'angular velocity from raw record',
+    `${evidence.evidence.angularVelocity.rows.length} rows · max err ${exp(ang.maxError)} °/s${ang.worst ? ` @ ${ang.worst.time.toFixed(2)}s` : ''}`,
+    ang.maxError <= 1e-6,
+  ));
+  parts.push(row('runs to end', `${evidence.checks.completion.state} · residual ${exp(evidence.checks.completion.endResidualMeters)} m`, evidence.checks.completion.ok));
+  parts.push(row('pause / resume', evidence.checks.pause.frozen ? `frozen at ${evidence.checks.pause.pausedAt.toFixed(2)}s` : 'time advanced while paused', evidence.checks.pause.ok));
+  parts.push(row('repeated triggers', evidence.checks.repeated.probes.map((p) => p.id).join(', '), evidence.checks.repeated.ok));
+  const neg = evidence.checks.negatives;
+  parts.push(row('fault: envelope ×0.5', `max err ${exp(neg.envelope.maxEnvelopeError)} · reported ${neg.envelope.reportedPass ? 'pass' : 'fail'}`, neg.envelope.detected));
+  parts.push(row('fault: camera rotation', `max ω err ${exp(neg.angularVelocity.maxAngularVelocityError)} °/s`, neg.angularVelocity.detected));
+  parts.push(row('fault: frame-count timing', `Δp ${exp(neg.frameCount.maxSharedPositionError)} m · reported ${neg.frameCount.reportedPass24 ? 'pass' : 'fail'}`, neg.frameCount.detected));
+  els.timingDetail.innerHTML = `<div class="audit-grid">${parts.join('')}</div>`;
+}
+
+els.timingButton.addEventListener('click', runAndRenderTiming);
+
 // --- instrumentation (for automated browser checks) --------------------
 window.__shakeLab = {
   get state() {
@@ -744,6 +847,39 @@ window.__shakeLab = {
     state.audit = audit;
     renderAudit(audit);
     return audit;
+  },
+  captureFeedback({ rate = 60, duration = null } = {}) {
+    const span = duration ?? Math.max(rig.duration, 5);
+    return captureCameraFeedback(camera, rig, uniformTimes(span, rate), {});
+  },
+  analyzeFeedback(record) {
+    return analyzeFeedbackRecord(record, { events: rig.events });
+  },
+  compareFeedback(a, b) {
+    return compareFeedbackRecords(a, b);
+  },
+  captureFrameCountFeedback({ rate = 24, duration = null } = {}) {
+    const span = duration ?? Math.max(rig.duration, 5);
+    return captureFrameCountFeedback(camera, rig, uniformTimes(span, rate), rate);
+  },
+  timingEvidence({ rates = [24, 30, 60, 144], duration = null } = {}) {
+    const evidence = collectShakeTimingEvidence({
+      seed: state.seed,
+      rates,
+      camera,
+      spectrum: state.spectrum,
+      space: state.space,
+      duration: duration ?? Math.max(rig.duration, 8.05),
+    });
+    state.timing = evidence;
+    renderTiming(evidence);
+    return evidence;
+  },
+  get timingPass() {
+    return state.timing?.pass ?? null;
+  },
+  get angularVelocity() {
+    return liveAngularVelocity;
   },
   measureTrajectory({ rate = 240, duration = 7.6 } = {}) {
     const samples = [];

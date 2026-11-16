@@ -18,12 +18,29 @@ Then open the printed URL. The demo starts playing immediately.
 Other commands:
 
 ```bash
-npm test             # 23 node:test checks of the shake core and analysis
+npm test             # node:test checks of the shake core, feedback acceptance, and analysis
+npm run test:shake-timing                     # headless shake-timing evidence (text)
+node scripts/verify-shake-timing.mjs --out=timing.json
+npm run test:ui      # browser checks (needs npm run dev in another terminal)
 node scripts/audit.mjs --seed=1337            # headless trajectory audit (text)
 node scripts/audit.mjs --seed=1337 --out=audit.json
 npm run build && npm run preview              # production build
-npm run test:ui      # browser checks (needs npm run dev in another terminal)
 ```
+
+The command line is only a helper. The graphical entry points are the source
+of truth:
+
+- **Shake spectrum → Regression replay** opens the acceptance sample (repeated
+  impulses over a sustained engine) in the render scene.
+- **Result area → Verify shake timing** runs the timing acceptance from the
+  button and fills the *Shake timing evidence* panel. Adjust the spectrum
+  sliders and play the scene to see the camera motion and the envelope move
+  together; the panel numbers come from that same rendered camera transform.
+- **Result area → Run trajectory audit** remains the envelope/impulse/engine
+  audit.
+
+The old *Regression replay* sample is kept as a preset specifically so it can
+be started from the demo scene and watched through to its end.
 
 ## What the interface does
 
@@ -64,6 +81,12 @@ npm run test:ui      # browser checks (needs npm run dev in another terminal)
   impulse, the engine, frame-rate replay at 24/30/60/144 Hz, spectrum tracking,
   and seed reproducibility. Anomalies (for example mid frequency ≥ high
   frequency) are shown in a banner and the rig refuses the invalid schedule.
+- **Shake timing evidence** — press *Verify shake timing* to capture the
+  rendered camera at 24/30/60/144 Hz. The panel reports the amplitude-envelope
+  and angular-velocity error against independently derived references, the
+  pause/resume behaviour, repeated trigger probes, and three deliberately
+  injected faults (scaled envelope, corrupted camera rotation, frame-count
+  timing) which must be reported as detected.
 
 ## Module layout
 
@@ -80,6 +103,8 @@ src/analysis/
   fft.js         radix-2 FFT, Hann window, parabolic peak refinement
   trajectory.js  RMS, peak, max step helpers
   resample.js    uniform-time resampling of captured trajectories
+  feedback.js    camera feedback record, independent envelope/angular-velocity refs
+  shakeTiming.js clean-dir timing evidence, pause/repeat probes, controlled faults
   audit.js       impulse, engine, frame-rate, spectrum and seed audits
 src/scene/       static 3D range and chase-view diagnostic renderer
 src/ui/charts.js canvas charts (envelope, trajectory, shake, spectrum)

@@ -126,6 +126,115 @@ const auditAfter = await page.evaluate(() => window.__shakeLab.runAudit());
 check('audit tracks the changed spectrum', auditAfter.spectrum.pass);
 
 check('no page errors during run', pageErrors.length === 0, pageErrors.join(' | '));
+
+// --- shake timing acceptance (UI is the entry point; CLI is only a helper) ---
+await page.evaluate(() => window.__shakeLab.applyPreset('regression'));
+await page.waitForTimeout(200);
+check('regression sample opens from the demo scene', await page.evaluate(() => {
+  const lab = window.__shakeLab;
+  return lab.state.preset === 'regression'
+    && document.querySelector('[data-preset="regression"]')?.classList.contains('primary');
+}));
+
+const beforeTiming = await page.evaluate(() => window.__shakeLab.cameraTransform());
+await page.click('#btn-timing');
+await page.waitForTimeout(2600);
+const timingUi = await page.evaluate(() => {
+  const lab = window.__shakeLab;
+  const pass = lab.timingPass;
+  const summary = document.getElementById('timing-summary').textContent;
+  const detail = document.getElementById('timing-detail').textContent;
+  const record = lab.captureFeedback({ rate: 24, duration: lab.state.duration });
+  const probe = record[20];
+  lab.setClockTime(probe.time);
+  const cam = lab.cameraTransform();
+  const evaluated = lab.evalAt(probe.time).final;
+  return {
+    pass,
+    summary,
+    detail,
+    cameraMatchesRecord: Math.abs(cam.position.x - probe.position.x) === 0
+      && Math.abs(cam.position.y - probe.position.y) === 0
+      && Math.abs(cam.quaternion.w - probe.quaternion.w) === 0,
+    cameraMatchesRig: Math.abs(cam.position.x - evaluated.position.x) < 1e-12
+      && Math.abs(cam.quaternion.w - evaluated.quaternion.w) < 1e-12,
+  };
+});
+check('timing button drives the real camera, not fixed data', timingUi.cameraMatchesRecord
+  && timingUi.cameraMatchesRig && beforeTiming !== null, `summary ${timingUi.summary}`);
+check('timing panel reports evidence from execution', timingUi.pass === true
+  && /pass/.test(timingUi.summary)
+  && !/not run/.test(timingUi.detail), timingUi.summary);
+
+const evidence = await page.evaluate(() => {
+  const lab = window.__shakeLab;
+  lab.pause();
+  return lab.timingEvidence({ rates: [24, 60], duration: lab.state.duration });
+});
+check('envelope and angular velocity come from the raw record', evidence.pass === true
+  && evidence.evidence.envelope.rows.length > 0
+  && evidence.evidence.angularVelocity.rows.length > 0
+  && evidence.evidence.envelope.maxError <= 1e-9
+  && evidence.evidence.angularVelocity.maxError <= 1e-6,
+  `env ${evidence.evidence.envelope.maxError} · ω ${evidence.evidence.angularVelocity.maxError}`);
+
+check('UI camera transform matches the raw feedback record', await page.evaluate((first) => {
+  const lab = window.__shakeLab;
+  lab.setClockTime(first.time);
+  const cam = lab.cameraTransform();
+  return Math.abs(cam.position.x - first.position.x) < 1e-12
+    && Math.abs(cam.position.y - first.position.y) < 1e-12
+    && Math.abs(cam.quaternion.w - first.quaternion.w) < 1e-12;
+}, evidence.sample.raw[0].samples[Math.floor(evidence.sample.raw[0].samples.length / 2)]));
+
+check('frame-count timing is rejected, time-driven capture is accepted', await page.evaluate(() => {
+  const lab = window.__shakeLab;
+  const good = lab.analyzeFeedback(lab.captureFeedback({ rate: 30, duration: lab.state.duration }));
+  const bad = lab.analyzeFeedback(lab.captureFrameCountFeedback({ rate: 24, duration: lab.state.duration }));
+  return good.pass === true && bad.pass === false && bad.declaredTimeOk === false;
+}));
+
+check('live angular velocity is measured from rendered camera frames', await page.evaluate(() => {
+  const lab = window.__shakeLab;
+  lab.play();
+  return Number.isFinite(lab.angularVelocity);
+}));
+await page.evaluate(() => window.__shakeLab.pause());
+
+const spectrumMotion = await page.evaluate(() => {
+  const lab = window.__shakeLab;
+  lab.applyPreset('regression');
+  lab.pause();
+  lab.setClockTime(1.05);
+  const before = {
+    camera: lab.cameraTransform().position,
+    envelope: lab.evalAt(1.05).envelopeMax,
+  };
+  const slider = document.getElementById('high-hz');
+  slider.value = '28';
+  slider.dispatchEvent(new Event('input', { bubbles: true }));
+  lab.setClockTime(1.05);
+  const after = {
+    camera: lab.cameraTransform().position,
+    envelope: lab.evalAt(1.05).envelopeMax,
+  };
+  const feedback = lab.analyzeFeedback(lab.captureFeedback({ rate: 60, duration: lab.state.duration }));
+  return {
+    cameraChanged: Math.hypot(
+      after.camera.x - before.camera.x,
+      after.camera.y - before.camera.y,
+      after.camera.z - before.camera.z,
+    ) > 1e-6,
+    envelopeUnchanged: before.envelope === after.envelope,
+    envelopeStillCorrect: feedback.maxEnvelopeError === 0 && feedback.pass === true,
+    errorBanner: document.getElementById('error-banner')?.textContent ?? null,
+  };
+});
+check('spectrum slider changes camera motion while envelope stays reference-correct', spectrumMotion.cameraChanged
+  && spectrumMotion.envelopeUnchanged
+  && spectrumMotion.envelopeStillCorrect
+  && !spectrumMotion.errorBanner, JSON.stringify(spectrumMotion));
+
 await browser.close();
 
 const failed = results.filter((r) => !r.ok);

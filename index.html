@@ -144,6 +144,7 @@
               </label>
             </div>
             <div class="preset-row" role="group" aria-label="Presets">
+              <button type="button" data-preset="regression">Regression replay</button>
               <button type="button" data-preset="impulse">Single impulse</button>
               <button type="button" data-preset="engine">Continuous engine</button>
               <button type="button" data-preset="combined" class="primary">Impulse + engine</button>
@@ -169,6 +170,7 @@
           <h2>Result area — measured motion and envelopes</h2>
           <div class="chart-actions">
             <button type="button" id="btn-audit">Run trajectory audit</button>
+            <button type="button" id="btn-timing">Verify shake timing</button>
             <span class="subtle" id="audit-stamp">—</span>
           </div>
         </div>
@@ -202,6 +204,11 @@
             <span class="metric-label">max step</span>
             <strong id="m-step">—</strong>
             <span class="metric-sub" id="m-step-sub">per-frame position step</span>
+          </article>
+          <article class="metric">
+            <span class="metric-label">angular velocity</span>
+            <strong id="m-omega">—</strong>
+            <span class="metric-sub" id="m-omega-sub">from render camera</span>
           </article>
         </div>
 
@@ -242,6 +249,10 @@
             <h3>Audit <span class="subtle" id="audit-summary">not run</span></h3>
             <div id="audit-detail" class="audit-detail">
               <p class="hint">Run the audit to compare impulse and engine envelopes, frame-rate replay at 24/30/60/144 Hz, spectral peak tracking, and residual offset after each event ends.</p>
+            </div>
+            <h3 style="margin-top:14px">Shake timing evidence <span class="subtle" id="timing-summary">not run</span></h3>
+            <div id="timing-detail" class="audit-detail">
+              <p class="hint">Verify timing recomputes the amplitude envelope and angular velocity from the raw camera record at 24/30/60/144 Hz, including pause, repeated triggers, and controlled faults.</p>
             </div>
           </div>
         </div>
